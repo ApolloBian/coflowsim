@@ -67,7 +67,7 @@ public class Constants {
   public static final int MAX_CONCURRENT_FLOWS = 5;
 
   /**
-   * Capacity constraint of a rack in bps.
+   * Capacity constraint of a rack in bps. (1 Gbps)
    */
   public static final double RACK_BITS_PER_SEC = 1.0 * 1024 * 1048576;
 
