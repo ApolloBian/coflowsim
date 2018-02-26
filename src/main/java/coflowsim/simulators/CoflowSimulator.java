@@ -81,7 +81,7 @@ public class CoflowSimulator extends Simulator {
         ReduceTask rt = (ReduceTask) t;
 
         // Update start stats for the task and its parent job
-        rt.startTask(CURRENT_TIME);
+        rt.startTask(CURRENT_TIME); 
 
         // Add the parent job to the collection of active jobs
         if (!activeJobs.containsKey(rt.parentJob.jobName)) {

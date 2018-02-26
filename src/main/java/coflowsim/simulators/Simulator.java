@@ -155,7 +155,7 @@ public abstract class Simulator {
    * 
    * @param EPOCH_IN_MILLIS
    *          simulator epoch length in milliseconds
-   */
+   */ 
   public void simulate(int EPOCH_IN_MILLIS) {
     int curJob = 0;
     int TOTAL_JOBS = jobs.size();

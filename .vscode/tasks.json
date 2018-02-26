@@ -1,0 +1,31 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "mvn package",
+            "group": "build"
+        },
+        {
+            "label": "test",
+            "type": "shell",
+            "command": "mvn exec:java -Dexec.mainClass=\"coflowsim.CoflowSim\"",
+            "group": "test"
+        },
+        {
+            "label": "build-test",
+            "type": "shell",
+            "command": "mvn package && mvn exec:java -Dexec.mainClass=\"coflowsim.CoflowSim\"",
+            "group": "test"
+        },
+        {
+            "label": "run-py",
+            "type": "shell",
+            "command": "python CDF.py",
+            "group": "test"
+        }
+    ]
+}
