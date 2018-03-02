@@ -3,42 +3,128 @@ import argparse
 import sys
 import matplotlib.pyplot as plt
 
-
-def wss(coflows, bandwidth, background_flow):
-    # coflows are sorted
-    coflow_in_progress = []
-    id_2_coflow = dict([(coflow.coflow_id, coflow) for coflow in coflows])
-    reducer_2_flow = {}
-    for incoming_coflow in coflows:
-        # current_time
-        current_time = incoming_coflow.arrival_time
-        # check if any flow completes
-        global_min_flow, global_min_time = None, sys.maxint
-        for _, flows_this_reducer in reducer_2_flow.items():
-            related_coflows = [id_2_coflow.get(item.coflow_id)
-                    for item in flows_this_reducer]
-            related_coflow_sizes = [item.get_size() 
-                    for item in related_coflows]
-            total_size = sum(related_coflow_sizes)
-            allocated_bandwidths = [bandwidth * size / total_size
-                    for size in related_coflow_sizes]
-            test_completion_time = [flow.test(bandwidth) for flow, bandwidth in
-                    zip(flows_this_reducer, allocated_bandwidths)]
-            min_flow, min_time = min(enumerate(test_completion_time),
-                    key=lambda x: x[1])
-            if min_time < global_min_time:
-                global_min_flow, global_min_time = min_flow, min_time
+# global variables
+current_time = 0
 
 
+class Simulator:
+    def __init__(self):
+        self.current_time = 0
+        self.reducer_dict = {}
+        self.coflow_sizes = {} 
 
-        # enqueue
-        coflow_in_progress.append(incoming_coflow)
-        # arrange each flow to designated port
-        for reducer, flow in zip(incoming_coflow.reducers,
-                incoming_coflow.flows):
-            flows_each_reducer = reducer_2_flow.get(reducer, [])
-            flows_each_reducer.append(flow)
-            reducer_2_flow[reducer] = flows_each_reducer
+    def simulate(self, algorithm, coflows,
+            background_flow=0.0, bandwidth=125.0):
+        # default bandwidth 1Gbps
+        if algorithm == 'wss':
+            self.wss(coflows, bandwidth, background_flow)
+        elif algorithm == 'fifo':
+            self.fifo(coflows, bandwidth, background_flow)
+        elif algorithm == 'sebf':
+            self.sebf(coflows, bandwidth, background_flow)
+
+    def fifo(self, coflows, bandwidth, background_flow):
+        bandwidth *= 1 - background_flow
+        id_2_coflow = dict([(coflow.coflow_id, coflow) for coflow in coflows])
+        id_2_priority = dict(zip(coflows.keys(), range(len(coflows.keys()))))
+        heavy_size_2xavg = sum(map(lambda x: x.total_size, coflows)) / len(coflows) * 2
+        proceeding_coflows = []
+
+        time_period = [0]
+        time_period.extend([coflow.arrival_time for coflow in coflows])
+        last_tp = 0
+        while time_period:
+            tp = time_period.pop(0)
+            next_tp = sys.maxsize
+            # see if anyone arrives
+            for coflow in coflows:
+                if coflow.arrival_time == tp:
+                    coflow.status = 'r'
+                    for r_id, flow in coflow.reducers, coflow.flows:
+                        self.reducer_dict[r_id].flows.append(flow)
+                        self.reducer_dict[r_id].flows.sort(key=
+                                lambda x: id_2_priority[x.coflow_id])
+                        
+            # see if any flow will complete
+            # see if any flow will become heavy
+
+            last_tp = tp
+        '''
+        for incoming_coflow in coflows:
+            tp = incoming_coflow.arrival_time
+            # check every port and allocate bandwidth
+            for r_id, reducer in self.reducer_dict.items():
+                # assign flows with bandwidth
+                reducer.flows.sort(key=lambda x: id_2_priority[x.coflow_id])
+                # check how many flows are allowed to transfer
+                allowed_flows = []
+                for flow in reducer.flows:
+                    if id_2_coflow[flow.coflow_id].fifo_is_heavy and flow.status != 'f':
+                        allowed_flows.append(flow)
+                        continue
+                    allowed_flows.append(flow)
+                    break
+                for flow in allowed_flows:
+                    flow.status = 'r'
+                    flow.allocated_bandwidth = bandwidth / len(allowed_flows)
+
+            # iterate through coflows to see if anyone completes before the next coflow comes
+            estimate_heavy_times = [item.estimate_time_to_heavy(heavy_size_2xavg) for item in coflows]
+        '''
+
+    def wss(self, coflows, bandwidth, background_flow):
+        # coflows are sorted
+        bandwidth *= 1 - background_flow
+        id_2_coflow = dict([(coflow.coflow_id, coflow) for coflow in coflows])
+        self.reducer_dict = {}
+        for incoming_coflow in coflows:
+            tp = incoming_coflow.arrival_time
+            # see if anything completes before new coflow arrives
+            # iterate through reducers and calculate completion time for each one
+            for r_id, reducer in self.reducer_dict.items():
+                reducer_total_size = sum([item.size for item in reducer.flows])
+                if reducer_total_size > bandwidth * (tp - self.current_time):
+                    # not complete
+                    # * (reducer_total_size - bandwidth * (tp - self.current_time)) / reducer_total_size
+                    for item in reducer.flows:
+                        item.size *= (reducer_total_size - bandwidth * (tp - self.current_time)) / reducer_total_size 
+                else:
+                    # complete
+                    complete_time = self.current_time + reducer_total_size / bandwidth
+                    for item in reducer.flows:
+                        item.complete_time = complete_time
+                        item.status = 'f'
+                        related_coflow = id_2_coflow[item.coflow_id]
+                        related_coflow.update_status(complete_time)
+            # add incoming flows to related reducers
+            for r_id, flow in zip(incoming_coflow.reducers, incoming_coflow.flows):
+                reducer = self.reducer_dict.get(r_id, Reducer())
+                reducer.add_flow(flow)
+                self.reducer_dict[r_id] = reducer
+
+        for r_id, reducer in self.reducer_dict.items():
+            reducer_total_size = sum([item.size for item in reducer.flows])
+            # complete
+            complete_time = self.current_time + reducer_total_size / bandwidth
+            for item in reducer.flows:
+                item.complete_time = complete_time
+                item.status = 'f'
+                related_coflow = id_2_coflow[item.coflow_id]
+                related_coflow.update_status(complete_time)
+        # debug
+        # for c_id, coflow in id_2_coflow.items():
+        #     print(c_id, coflow.total_size, coflow.complete_time)
+        average_cct = sum(map(lambda x: x[1].complete_time, id_2_coflow.items())) / len(id_2_coflow.items())
+        print('avg_cct: ', average_cct)
+
+
+
+class Reducer:
+    def __init__(self):
+        self.flows = []
+
+    def add_flow(self, flow):
+        self.flows.append(flow)
 
 
             
@@ -51,13 +137,7 @@ class flow:
         self.current_time = start_time
         self.complete_time = None
         self.coflow_id = coflow_id
-
-    def test(self, allocated_bandwidth):
-        return self.size / allocated_bandwidth + self.current_time
-
-    def run(self, allocated_bandwidth, run_until):
-        self.size -= (run_until - self.current_time) * allocated_bandwidth
-        self.current_time = run_until
+        self.allocated_bandwidth = 0
 
 
 class coflow:
@@ -69,23 +149,45 @@ class coflow:
         num_mapper = int(num_mapper)
         self.num_mapper = num_mapper
         self.loc_mappers = split[3:3 + num_mapper]
+        self.fifo_is_heavy = False
         # size:MB
         reducer_size_pairs = [item.split(":")
                 for item in split[4 + num_mapper:]]
 
         self.reducers = [item[0] for item in reducer_size_pairs]
-        self.flows = [flow(float(item[1], self.arrival_time, self.coflow_id))
+        self.flows = [flow(float(item[1]), self.arrival_time, self.coflow_id)
                 for item in reducer_size_pairs]
         self.status = 'w'
+        self.total_size = sum(map(lambda x: x.size, self.flows))
         # w(aiting), r(unning), f(inish)
+
+    def get_min_flow_completion_time(self):
+        min_time = sys.maxsize
+        for flow in self.flows:
+            if flow.status == 'r':
+                time = flow.size / flow.allocated_bandwidth
+                min_time = if min_time > time then time else min_time
+        return min_time
+
+
+    def get_total_bandwidth(self):
+        return sum(map(lambda x: x.allocated_bandwidth, self.flows))
+
+    def estimate_time_to_heavy(self, heavy_size):
+        return (heavy_size - self.total_size + self.get_size()) / self.get_total_bandwidth()
 
     def get_size(self):
         total_size = 0
         for flow in self.flows:
             total_size += flow.size
         return total_size
+
+    def change_status(self, status):
+        self.status = status
     
     def update_status(self, current_time):
+        if current_time >= self.arrival_time and self.status == 'w':
+            self.status = 'r'
         status = [item.status for item in self.flows]
         if 'w' not in status and 'r' not in status:
             if self.status != 'f':
@@ -115,14 +217,6 @@ def parse_file(fn):
     return coflows
 
 
-def simulate(algorithm, coflows, background_flow=0.0, bandwidth=125.0):
-    # default bandwidth 1Gbps
-    if algorithm == 'wss':
-        wss(coflows, bandwidth, background_flow)
-    elif algorithm == 'fifo':
-        fifo(coflows, bandwidth, background_flow)
-    elif algorithm == 'sebf':
-        sebf(coflows, bandwidth, background_flow)
 
     
 
@@ -130,7 +224,8 @@ def main():
     args = getargs()
     coflows = parse_file('./FB2010-1Hr-150-0.txt')
     sorted_coflows = sorted(coflows, key=lambda x: x.arrival_time)
-    simulate(args.algorithm, sorted_coflows)
+    simulator = Simulator()
+    simulator.simulate(args.algorithm, sorted_coflows)
 
 
 if __name__ == '__main__':
