@@ -105,7 +105,7 @@ class Simulator:
         sig = 100
         running_coflow_id = []
         last_sigma_arrived_coflow_list = []
-        # 1. rank 1 coflow completes
+        # 1. coflow completes
         # 2. new coflow arrives
 
 
