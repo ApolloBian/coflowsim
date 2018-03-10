@@ -22,6 +22,8 @@ class Simulator:
             self.fifo(coflows, bandwidth, background_flow)
         elif algorithm == 'sebf':
             self.sebf(coflows, bandwidth, background_flow)
+        elif algorithm == 'sebf_rr':
+            self.sebf_response_ratio(coflows, bandwidth, background_flow)
 
     def fifo(self, coflows, bandwidth, background_flow):
         bandwidth *= 1 - background_flow
@@ -116,8 +118,10 @@ class Simulator:
                 # special condition
                 # if p1 bottleneck and p1.5 bottleneck
                 # 1/size, size is of bottleneck
+                if not reducer.flows:
+                    continue
                 hpid = reducer.flows[0].coflow_id
-                hppriority = id_2_priority[hpid]
+                hppriority = id_2_priority.get(hpid, None)
                 is_p1 = hppriority == 1
                 if is_p1:
                     p1coflow = id_2_coflow[hpid]
@@ -174,6 +178,7 @@ class Simulator:
         id_2_tl = dict()
         count = 0
         heavy_id_2_responce_ratio = {}
+        heavy_id_proposal = None
         while True:
             print("tp:", tp)
             # check status
@@ -226,6 +231,21 @@ class Simulator:
                     next_tp = min(incoming_coflow.arrival_time, next_tp)
                 if next_tp == sys.maxsize:
                     break
+                # 3. some flow becomes heavy
+                heavy_threshold = len(id_2_priority)
+                for cid in id_2_priority.keys():
+                    coflow = id_2_coflow[cid]
+                    # estimate the time until it gets heavy
+                    if coflow.begin_time == None:
+                        # only those haven't started could be heavy
+                        time = coflow.arrival_time + coflow.total_size * (heavy_threshold - 1) / bandwidth
+                        # ( > current_time
+                        if time <= tp:
+                            continue
+                        if next_tp > time:
+                            next_tp = time
+                            heavy_id_proposal = cid
+
             elif is_flow_completion:
                 print("flow_completion")
                 # coflow_id_list.append(incoming_coflow.coflow_id)
@@ -238,6 +258,7 @@ class Simulator:
                     coflow_is_complete = False
                 if coflow_is_complete:
                     if cf.status != 'f':
+                        heavy_id_2_responce_ratio.pop(cf.coflow_id, None)
                         cf.status = 'f'
                         cf.complete_time = tp
                     id_2_priority, id_2_tl = reschedule(coflow_id_list,
@@ -261,14 +282,76 @@ class Simulator:
                     next_tp = min(incoming_coflow.arrival_time, next_tp)
                 if next_tp == sys.maxsize:
                     break
+                # 3. some flow becomes heavy
+                heavy_threshold = len(id_2_priority)
+                for cid in id_2_priority.keys():
+                    coflow = id_2_coflow[cid]
+                    # estimate the time until it gets heavy
+                    if coflow.begin_time == None:
+                        # only those haven't started could be heavy
+                        time = coflow.arrival_time + coflow.total_size * (heavy_threshold - 1) / bandwidth
+                        # ( > current_time
+                        if time <= tp:
+                            continue
+                        if next_tp > time:
+                            next_tp = time
+                            heavy_id_proposal = cid
             else:
                 # is coflow becomes heavy
-
+                # handling logics
+                # check if heavy_id_proposal is heavy
+                alternative_heavy_coflow = id_2_coflow[heavy_id_proposal]
+                rr = alternative_heavy_coflow.get_responce_ratio_at(tp, bandwidth)
+                heavy_threshold = len(id_2_priority)
+                if rr == heavy_threshold:
+                    # it is heavy now
+                    # append to heavy dict
+                    heavy_id_2_responce_ratio[heavy_id_proposal] = rr
+                    id_2_priority, id_2_tl = reschedule(coflow_id_list,
+                            heavy_id_2_responce_ratio)
+                # end handling logics
+                # calculate next tp
+                # 1. flow completion
+                next_tp = sys.maxsize
+                for _, reducer in reducer_dict.items():
+                    for flow in reducer.flows:
+                        if flow.status == 'f':
+                            continue
+                        elif flow.allocated_bandwidth:
+                            time = flow.size / flow.allocated_bandwidth + tp
+                            if next_tp > time:
+                                flow_2_complete = flow
+                                next_tp = time
+                # 2. incoming coflow
+                if incoming_coflow:
+                    next_tp = min(incoming_coflow.arrival_time, next_tp)
+                if next_tp == sys.maxsize:
+                    break
+                # 3. some flow becomes heavy
+                heavy_threshold = len(id_2_priority)
+                for cid in id_2_priority.keys():
+                    coflow = id_2_coflow[cid]
+                    # estimate the time until it gets heavy
+                    if coflow.begin_time == None:
+                        # only those haven't started could be heavy
+                        time = coflow.arrival_time + coflow.total_size * (heavy_threshold - 1) / bandwidth
+                        # ( > current_time
+                        if time <= tp:
+                            continue
+                        if next_tp > time:
+                            next_tp = time
+                            heavy_id_proposal = cid
 
             # update till next tp
             for _, reducer in reducer_dict.items():
                 for flow in reducer.flows:
                     flow.run_from_to(tp, next_tp)
+                    # update coflow status
+                    cf = id_2_coflow.get(flow.coflow_id)
+                    if cf.begin_time == None and flow.allocated_bandwidth > 0:
+                        cf.begin_time = tp
+                        cf.status = 'r'
+
             tp = next_tp
             count += 1
             if count == 350:
@@ -589,7 +672,7 @@ class coflow:
 def getargs():
     # arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('--algorithm', required=True, choices=['wss', 'fifo','sebf'])
+    parser.add_argument('--algorithm', required=True, choices=['wss', 'fifo','sebf','sebf_rr'])
     args = parser.parse_args()
     return args
 
