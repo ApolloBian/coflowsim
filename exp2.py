@@ -598,8 +598,8 @@ class Simulator:
                     id_2_priority, id_2_tl = reschedule(coflow_id_list)
                 else:
                     # print('flow')
-                    # pass
-                    rearrange_bandwidth(id_2_priority, id_2_tl)
+                    pass
+                    # rearrange_bandwidth(id_2_priority, id_2_tl)
                 # calculate next tp
                 # 1. flow completion
                 next_tp = sys.maxsize
@@ -739,7 +739,8 @@ class coflow:
         elif self.begin_time == None:
             waiting_time = current_time - self.arrival_time
         else:
-            waiting_time = self.begin_time - self.arrival_time
+            # waiting_time = self.begin_time - self.arrival_time
+            return 1
 
         required_time = self.total_size / global_max_bandwidth
         responce_ratio = round(required_time / required_time - 0.5) + 1
