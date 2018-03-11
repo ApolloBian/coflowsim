@@ -430,11 +430,11 @@ class Simulator:
                         is_flow_completion = True
                         related_coflow_id = flow.coflow_id
                         break
-            print(is_new_coflow_arrival)
-            print(is_flow_completion)
+            # print(is_new_coflow_arrival)
+            # print(is_flow_completion)
             # update all status
             if is_new_coflow_arrival:
-                print("coflow_arrival")
+                # print("coflow_arrival")
                 coflow_id_list.append(incoming_coflow.coflow_id)
                 incoming_coflow.status = 'w'
                 # assign flows to reducers
@@ -444,7 +444,7 @@ class Simulator:
                     reducer.flows.append(flow)
                 # allocate bandwidth for each flow
                 id_2_priority, id_2_tl = reschedule(coflow_id_list)
-                print(id_2_priority, id_2_tl)
+                # print(id_2_priority, id_2_tl)
                 # calculate next tp
                 # 1. flow completion
                 next_tp = sys.maxsize
@@ -464,10 +464,10 @@ class Simulator:
                 if next_tp == sys.maxsize:
                     break
             elif is_flow_completion:
-                print("flow_completion")
+                # print("flow_completion")
                 # coflow_id_list.append(incoming_coflow.coflow_id)
                 # check flow_2_complete
-                print(flow_2_complete.size)
+                # print(flow_2_complete.size)
                 cf = id_2_coflow[flow_2_complete.coflow_id]
                 flow_status = [flow.status for flow in cf.flows]
                 coflow_is_complete = True
