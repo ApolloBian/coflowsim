@@ -6,6 +6,13 @@ import matplotlib.pyplot as plt
 # global variables
 current_time = 0
 
+def get_average(a_list):
+    return sum(a_list) / len(a_list)
+
+def get_percentile(a_list, percent=0.8):
+    order = sorted(a_list)
+    index = round(len(a_list) * percent - 0.5)
+    return order[index]
 
 class Simulator:
     def __init__(self):
@@ -17,15 +24,17 @@ class Simulator:
             background_flow=0.0, bandwidth=125.0):
         # default bandwidth 1Gbps
         if algorithm == 'wss':
-            self.wss(coflows, bandwidth, background_flow)
+            return self.wss(coflows, bandwidth, background_flow)
         elif algorithm == 'fifo':
-            self.fifo(coflows, bandwidth, background_flow)
+            # self.fifo(coflows, bandwidth, background_flow)
+            return self.fifo_new(coflows, bandwidth, background_flow)
         elif algorithm == 'sebf':
-            self.sebf(coflows, bandwidth, background_flow)
+            return self.sebf(coflows, bandwidth, background_flow)
         elif algorithm == 'sebf_rr':
-            self.sebf_response_ratio(coflows, bandwidth, background_flow)
+            return self.sebf_response_ratio(coflows, bandwidth, background_flow)
 
     def fifo(self, coflows, bandwidth, background_flow):
+        bandwidth *= 0.001
         bandwidth *= 1 - background_flow
         id_2_coflow = dict([(coflow.coflow_id, coflow) for coflow in coflows])
         id_2_priority = dict(zip(id_2_coflow.keys(), range(len(coflows))))
@@ -43,10 +52,10 @@ class Simulator:
         arrived_coflows = 0
         all_coflows = coflows.copy()
         while 'r' in coflow_status or 'w' in coflow_status:
-            print("time", time)
-            print("arrived", arrived_coflows)
-            print('running', len([item for item in coflow_status if item == 'r']))
-            print("finished", len([item for item in coflow_status if item == 'f']))
+            # print("time", time)
+            # print("arrived", arrived_coflows)
+            # print('running', len([item for item in coflow_status if item == 'r']))
+            # print("finished", len([item for item in coflow_status if item == 'f']))
             if next_coflow != None and time >= next_coflow.arrival_time:
                 arrived_coflows += 1
                 # coflow arrives
@@ -92,7 +101,124 @@ class Simulator:
             time += time_step
         average_cct = sum([coflow.get_cct() for
             coflow in all_coflows]) / len(all_coflows)
-        print(average_cct)
+        ccts = [coflow.get_cct() for coflow in all_coflows]
+        print('avg cct', get_average(ccts))
+        print('80 per', get_percentile(ccts, 0.8))
+
+    def fifo_new(self, coflows, bandwidth, background_flow):
+        bandwidth *= 0.001
+        bandwidth *= 1 - background_flow
+        id_2_coflow = dict([(coflow.coflow_id, coflow) for coflow in coflows])
+        id_2_priority = dict(zip(id_2_coflow.keys(), range(len(coflows))))
+        heavy_size_2xavg = sum(map(lambda x: x.total_size, coflows)) / len(coflows) * 2
+        proceeding_coflows = []
+        self.reducer_dict = {}
+        all_coflows = coflows.copy()
+
+        # loop states
+        incoming_coflow = all_coflows.pop(0)
+        tp = incoming_coflow.arrival_time
+        is_new_coflow_arrival = True
+        is_flow_completion = False
+        is_coflow_completion = False
+        is_coflow_heavy = False
+        heavy_coflow_id = None
+        state = 'coflow_arrival'
+        flow_2_complete = None
+
+        def reschedule():
+            coflow_id_list = [cid for cid, cf in id_2_coflow.items()
+                    if cf.status != 'f']
+            for _, reducer in self.reducer_dict.items():
+                # allocate bandwidth
+                allowed_flows = []
+                reducer.flows = [flow for flow in reducer.flows if flow.status != 'f']
+                if not reducer.flows:
+                    continue
+                reducer.flows.sort(key=lambda x: id_2_priority[x.coflow_id])
+                for flow in reducer.flows:
+                    if id_2_coflow[flow.coflow_id].fifo_is_heavy:
+                        allowed_flows.append(flow)
+                        continue
+                    allowed_flows.append(flow)
+                    break
+                for flow in allowed_flows:
+                    flow.allocated_bandwidth = bandwidth / len(allowed_flows)
+        
+        while True:
+            # print(tp)
+            # print(state)
+            # strip finished flows
+            for _, reducer in self.reducer_dict.items():
+                reducer.flows = [i for i in reducer.flows if i.status != 'f']
+
+            # update all status
+            if state == 'coflow_arrival':
+                # update_reducers
+                for r_id, flow in zip(incoming_coflow.reducers, incoming_coflow.flows):
+                    reducer = self.reducer_dict.get(r_id, Reducer())
+                    self.reducer_dict[r_id] = reducer
+                    reducer.flows.append(flow)
+                    reducer.flows.sort(key=lambda x: id_2_priority[flow.coflow_id])
+                incoming_coflow = all_coflows.pop(0) if all_coflows else None
+            elif state == 'flow_completion':
+                # if coflow is complete ,set the status
+                for _, cf in id_2_coflow.items():
+                    if cf.status != 'f' and cf.get_completion_status() == 'f':
+                        cf.status = 'f'
+                        cf.complete_time = tp
+                running_coflows = [cf for _, cf in id_2_coflow.items()
+                        if cf.status != 'f']
+                if not running_coflows:
+                    break
+
+            elif state == 'coflow_heavy':
+                heavy_coflow = id_2_coflow[heavy_coflow_id]
+                heavy_coflow.fifo_is_heavy = True
+
+
+            reschedule()
+
+
+            # calculate next tp
+            next_tp = sys.maxsize
+            # 1. flow completion
+            for _, reducer in self.reducer_dict.items():
+                for flow in reducer.flows:
+                    if flow.allocated_bandwidth:
+                        time = flow.size / flow.allocated_bandwidth + tp
+                        if next_tp > time:
+                            flow_2_complete = flow
+                            next_tp = time
+                            state = 'flow_completion'
+
+            # 2. incoming coflow
+            if incoming_coflow:
+                arrival = incoming_coflow.arrival_time
+                if next_tp > arrival:
+                    next_tp = arrival
+                    state = 'coflow_arrival'
+            # 3. coflow becomes heavy
+            heavy_coflow_id = None
+            for cid, coflow in id_2_coflow.items():
+                if coflow.status != 'f':
+                    time = coflow.estimate_time_to_heavy(heavy_size_2xavg) + tp
+                    if next_tp > time and time > tp:
+                        next_tp = time
+                        heavy_coflow_id = cid
+                        state = 'coflow_heavy'
+
+            if next_tp == sys.maxsize:
+                break
+
+            # update till next tp
+            for _, reducer in self.reducer_dict.items():
+                for flow in reducer.flows:
+                    flow.run_from_to(tp, next_tp)
+            tp = next_tp
+        ccts = [item.get_cct() for _, item in id_2_coflow.items()]
+        return ccts
+
 
 
     def sebf_response_ratio(self, coflows, bandwidth, background_flow):
@@ -180,7 +306,7 @@ class Simulator:
         heavy_id_2_responce_ratio = {}
         heavy_id_proposal = None
         while True:
-            print("tp:", tp)
+            # print("tp:", tp)
             # check status
             if incoming_coflow:
                 is_new_coflow_arrival = tp == incoming_coflow.arrival_time
@@ -189,6 +315,7 @@ class Simulator:
             is_flow_completion = False
             is_in_T = tp % (T + sig) < T
             is_in_s = not is_in_T
+            is_coflow_completion = True
 
             related_coflow_id = None
             for _, reducer in reducer_dict.items():
@@ -196,12 +323,19 @@ class Simulator:
                     if flow.status == 'f':
                         is_flow_completion = True
                         related_coflow_id = flow.coflow_id
+                        cf = id_2_coflow[related_coflow_id]
+                        flow_status = [item.status for item in cf.flows]
+                        if 'r' in flow_status:
+                            is_coflow_completion = False
+                        else:
+                            cf.status = 'f'
+                            cf.complete_time = tp
                         break
-            print(is_new_coflow_arrival)
-            print(is_flow_completion)
+            # print(is_new_coflow_arrival)
+            # print(is_flow_completion)
             # update all status
             if is_new_coflow_arrival:
-                print("coflow_arrival")
+                # print("coflow_arrival")
                 coflow_id_list.append(incoming_coflow.coflow_id)
                 incoming_coflow.status = 'w'
                 # assign flows to reducers
@@ -212,7 +346,7 @@ class Simulator:
                 # allocate bandwidth for each flow
                 id_2_priority, id_2_tl = reschedule(coflow_id_list,
                        heavy_id_2_responce_ratio)
-                print(id_2_priority, id_2_tl)
+                # print(id_2_priority, id_2_tl)
                 # calculate next tp
                 # 1. flow completion
                 next_tp = sys.maxsize
@@ -247,20 +381,7 @@ class Simulator:
                             heavy_id_proposal = cid
 
             elif is_flow_completion:
-                print("flow_completion")
-                # coflow_id_list.append(incoming_coflow.coflow_id)
-                # check flow_2_complete
-                print(flow_2_complete.size)
-                cf = id_2_coflow[flow_2_complete.coflow_id]
-                flow_status = [flow.status for flow in cf.flows]
-                coflow_is_complete = True
-                if 'w' in flow_status or 'r' in flow_status:
-                    coflow_is_complete = False
-                if coflow_is_complete:
-                    if cf.status != 'f':
-                        heavy_id_2_responce_ratio.pop(cf.coflow_id, None)
-                        cf.status = 'f'
-                        cf.complete_time = tp
+                if is_coflow_completion:
                     id_2_priority, id_2_tl = reschedule(coflow_id_list,
                             heavy_id_2_responce_ratio)
                 else:
@@ -356,8 +477,8 @@ class Simulator:
             count += 1
             if count == 350:
                 continue
-        average_cct = sum(map(lambda x: x[1].get_cct(), id_2_coflow.items())) / len(id_2_coflow.items())
-        print('avg_cct: ', average_cct)
+        ccts = [coflow.get_cct() for _, coflow in id_2_coflow.items()]
+        return ccts
 
 
 
@@ -375,8 +496,6 @@ class Simulator:
         last_sigma_arrived_coflow_list = []
         # 1. rank 1 coflow completes
         # 2. new coflow arrives
-
-
         def rearrange_bandwidth(id_2_priority, id_2_tl):
             for _, reducer in reducer_dict.items():
                 band_left = usable_bandwidth
@@ -413,7 +532,7 @@ class Simulator:
         id_2_tl = dict()
         count = 0
         while True:
-            print("tp:", tp)
+            # print("tp:", tp)
             # check status
             if incoming_coflow:
                 is_new_coflow_arrival = tp == incoming_coflow.arrival_time
@@ -422,6 +541,7 @@ class Simulator:
             is_flow_completion = False
             is_in_T = tp % (T + sig) < T
             is_in_s = not is_in_T
+            is_coflow_completion = True
 
             related_coflow_id = None
             for _, reducer in reducer_dict.items():
@@ -429,9 +549,19 @@ class Simulator:
                     if flow.status == 'f':
                         is_flow_completion = True
                         related_coflow_id = flow.coflow_id
+                        cf = id_2_coflow[related_coflow_id]
+                        flow_status = [item.status for item in cf.flows]
+                        if 'r' in flow_status:
+                            is_coflow_completion = False
+                        else:
+                            cf.status = 'f'
+                            cf.complete_time = tp
+
                         break
-            # print(is_new_coflow_arrival)
-            # print(is_flow_completion)
+
+            # strip completed flows
+            for _, reducer in reducer_dict.items():
+                reducer.flows = [item for item in reducer.flows if item.status != 'f']
             # update all status
             if is_new_coflow_arrival:
                 # print("coflow_arrival")
@@ -464,21 +594,11 @@ class Simulator:
                 if next_tp == sys.maxsize:
                     break
             elif is_flow_completion:
-                # print("flow_completion")
-                # coflow_id_list.append(incoming_coflow.coflow_id)
-                # check flow_2_complete
-                # print(flow_2_complete.size)
-                cf = id_2_coflow[flow_2_complete.coflow_id]
-                flow_status = [flow.status for flow in cf.flows]
-                coflow_is_complete = True
-                if 'w' in flow_status or 'r' in flow_status:
-                    coflow_is_complete = False
-                if coflow_is_complete:
-                    if cf.status != 'f':
-                        cf.status = 'f'
-                        cf.complete_time = tp
+                if is_coflow_completion:
                     id_2_priority, id_2_tl = reschedule(coflow_id_list)
                 else:
+                    # print('flow')
+                    # pass
                     rearrange_bandwidth(id_2_priority, id_2_tl)
                 # calculate next tp
                 # 1. flow completion
@@ -503,11 +623,8 @@ class Simulator:
                 for flow in reducer.flows:
                     flow.run_from_to(tp, next_tp)
             tp = next_tp
-            count += 1
-            if count == 350:
-                continue
-        average_cct = sum(map(lambda x: x[1].get_cct(), id_2_coflow.items())) / len(id_2_coflow.items())
-        print('avg_cct: ', average_cct)
+        ccts = [item.get_cct() for _, item in id_2_coflow.items()]
+        return ccts
 
 
     def wss(self, coflows, bandwidth, background_flow):
@@ -519,7 +636,7 @@ class Simulator:
         self.current_time = 0
         for incoming_coflow in coflows:
             tp = incoming_coflow.arrival_time
-            print(tp)
+            # print(tp)
             # see if anything completes before new coflow arrives
             # iterate through reducers and calculate completion time for each one
             for r_id, reducer in self.reducer_dict.items():
@@ -554,10 +671,12 @@ class Simulator:
                 related_coflow = id_2_coflow[item.coflow_id]
                 related_coflow.update_status(complete_time)
         # debug
-        for c_id, coflow in id_2_coflow.items():
-            print(c_id, coflow.arrival_time, coflow.complete_time)
-        average_cct = sum(map(lambda x: x[1].get_cct(), id_2_coflow.items())) / len(id_2_coflow.items())
-        print('avg_cct: ', average_cct)
+        # for c_id, coflow in id_2_coflow.items():
+        #     print(c_id, coflow.arrival_time, coflow.complete_time)
+        ccts = [item.get_cct() for _, item in id_2_coflow.items()]
+        # average_cct = sum(map(lambda x: x[1].get_cct(), id_2_coflow.items())) / len(id_2_coflow.items())
+        # print('avg_cct: ', average_cct)
+        return ccts
 
 
 
@@ -614,7 +733,7 @@ class coflow:
         # w(aiting), r(unning), f(inish)
         self.begin_time = None
 
-    def get_responce_ratio_at(current_time, global_max_bandwidth):
+    def get_responce_ratio_at(self, current_time, global_max_bandwidth):
         if current_time < self.arrival_time:
             return None
         elif self.begin_time == None:
@@ -627,6 +746,10 @@ class coflow:
         return responce_ratio
 
     def get_cct(self):
+        # print(self.status)
+
+        # print([item.status for item in self.flows])
+        # print(self.coflow_id)
         return self.complete_time - self.arrival_time
 
     def get_bottleneck(self):
@@ -640,12 +763,18 @@ class coflow:
                 min_time = time if min_time > time else min_time
         return min_time
 
+    def get_completion_status(self):
+        stat = [item.status for item in self.flows]
+        if 'r' not in stat and 'w' not in stat:
+            return 'f'
+        else:
+            return 'r'
 
     def get_total_bandwidth(self):
         return sum(map(lambda x: x.allocated_bandwidth, self.flows))
 
     def estimate_time_to_heavy(self, heavy_size):
-        if self.get_total_bandwidth() == 0:
+        if self.get_total_bandwidth() == 0 or self.fifo_is_heavy:
             return sys.maxsize
         return (heavy_size - self.total_size + self.get_size()) / self.get_total_bandwidth()
 
@@ -673,6 +802,7 @@ def getargs():
     # arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('--algorithm', required=True, choices=['wss', 'fifo','sebf','sebf_rr'])
+    parser.add_argument('--bgflow', default=0.0, type=float)
     args = parser.parse_args()
     return args
 
@@ -693,8 +823,23 @@ def main():
     coflows = parse_file('./FB2010-1Hr-150-0.txt')
     sorted_coflows = sorted(coflows, key=lambda x: x.arrival_time)
     simulator = Simulator()
-    simulator.simulate(args.algorithm, sorted_coflows)
+    ccts = simulator.simulate(args.algorithm, sorted_coflows, background_flow=args.bgflow)
+    print(get_average(ccts), get_percentile(ccts))
 
+def all_exps():
+    coflows = parse_file('./FB2010-1Hr-150-0.txt')
+    sorted_coflows = sorted(coflows, key=lambda x: x.arrival_time)
+    algorithms = ['wss', 'fifo', 'sebf', 'sebf_rr']
+    # bgflows = [0, 0.1, 0.2, 0.3, 0.4, 0.5]
+    bgflows = [0.2]
+    for algorithm in algorithms:
+        print(algorithm)
+        for bgflow in bgflows:
+            simulator = Simulator()
+            ccts = simulator.simulate(algorithm, sorted_coflows.copy(), background_flow=bgflow)
+            print(ccts)
+            print(bgflows, get_average(ccts), get_percentile(ccts))
 
 if __name__ == '__main__':
     main()
+    # all_exps()
