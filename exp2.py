@@ -825,7 +825,8 @@ def main():
     sorted_coflows = sorted(coflows, key=lambda x: x.arrival_time)
     simulator = Simulator()
     ccts = simulator.simulate(args.algorithm, sorted_coflows, background_flow=args.bgflow)
-    print(get_average(ccts), get_percentile(ccts))
+    # print(get_average(ccts), get_percentile(ccts))
+    print("%f\t%f\t%f" % (args.bgflow, get_average(ccts), get_percentile(ccts)))
 
 def all_exps():
     coflows = parse_file('./FB2010-1Hr-150-0.txt')
