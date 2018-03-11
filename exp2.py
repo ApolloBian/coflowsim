@@ -497,13 +497,16 @@ class Simulator:
         # 1. rank 1 coflow completes
         # 2. new coflow arrives
         def rearrange_bandwidth(id_2_priority, id_2_tl):
-            for _, reducer in reducer_dict.items():
+            for rid, reducer in reducer_dict.items():
                 band_left = usable_bandwidth
                 reducer.flows = [item for item in reducer.flows if item.coflow_id in id_2_priority]
                 reducer.flows.sort(key=lambda x: id_2_priority[x.coflow_id])
                 for flow in reducer.flows:
-                    tl = id_2_tl[flow.coflow_id]
-                    madd_bandwidth = flow.size / tl
+                    # tl = id_2_tl[flow.coflow_id]
+                    # madd_bandwidth = flow.size / tl
+                    cf = id_2_coflow[flow.coflow_id]
+                    rid_2_madd_speed = cf.rid_2_madd_speed
+                    madd_bandwidth = rid_2_madd_speed[rid]
                     if madd_bandwidth < band_left:
                         band_left -= madd_bandwidth
                         flow.allocated_bandwidth = madd_bandwidth
@@ -522,6 +525,12 @@ class Simulator:
                     in sorted_id_n_bottleneck])
             id_2_tl = dict([(cid, bot / bandwidth) for cid, bot in sorted_id_n_bottleneck])
             not_scheduled_cid = set()
+            for cid in coflow_id_list:
+                tl = id_2_tl[cid]
+                cf = id_2_coflow[cid]
+                cf.madd_speeds = [item.size / tl for item in cf.flows]
+                cf.rid_2_madd_speed = dict([(rid, item.size / tl)
+                    for rid, item in zip(cf.reducers, cf.flows)])
             rearrange_bandwidth(id_2_priority, id_2_tl)
             return id_2_priority, id_2_tl
 
@@ -598,8 +607,8 @@ class Simulator:
                     id_2_priority, id_2_tl = reschedule(coflow_id_list)
                 else:
                     # print('flow')
-                    pass
-                    # rearrange_bandwidth(id_2_priority, id_2_tl)
+                    # pass
+                    rearrange_bandwidth(id_2_priority, id_2_tl)
                 # calculate next tp
                 # 1. flow completion
                 next_tp = sys.maxsize
@@ -732,6 +741,7 @@ class coflow:
         self.total_size = sum(map(lambda x: x.size, self.flows))
         # w(aiting), r(unning), f(inish)
         self.begin_time = None
+        self.madd_speeds = None
 
     def get_responce_ratio_at(self, current_time, global_max_bandwidth):
         if current_time < self.arrival_time:
